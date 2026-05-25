@@ -1,4 +1,6 @@
 # 将所有工具函数放入一个字典，方便后续调用
+from __future__ import annotations
+
 import os
 import re
 from pathlib import Path
@@ -43,6 +45,35 @@ def update_memory_after_finish(memory_manager: MemoryManager, user_prompt: str) 
     return memory_manager.maybe_update_memory(user_prompt)
 
 
+def build_ticket_recovery_observation(
+    tool_name: str,
+    kwargs: dict[str, str],
+    observation: str,
+) -> str | None:
+    """根据票务检查结果生成售罄后的备选推荐提示。
+
+    Args:
+        tool_name: 本轮执行的工具名称。
+        kwargs: 工具调用参数，票务工具中应包含 `attraction`。
+        observation: 工具返回的原始观察结果。
+
+    Returns:
+        如果本轮是票务检查且结果为售罄，返回一条用于追加到
+        prompt history 的恢复提示；否则返回 None。
+    """
+
+    if tool_name != "check_ticket_availability":
+        return None
+    if "sold_out" not in observation:
+        return None
+
+    attraction = kwargs.get("attraction", "该景点")
+    return (
+        f"{attraction}门票已售罄。请不要继续推荐{attraction}，"
+        "下一步必须根据用户偏好和当前天气推荐备选方案。"
+    )
+
+
 def run_agent() -> None:
     """运行旅行智能体主循环，并在程序层接入长期记忆。
 
@@ -55,12 +86,14 @@ def run_agent() -> None:
     """
 
     from client.model_client import OpenAICompatibleClient
+    from tools.check_ticket_availability import check_ticket_availability
     from tools.get_attraction import get_attraction
     from tools.get_weather import get_weather
 
     available_tools = {
         "get_weather": get_weather,
         "get_attraction": get_attraction,
+        "check_ticket_availability": check_ticket_availability,
     }
 
     # --- 1. 配置LLM客户端 ---
@@ -76,7 +109,7 @@ def run_agent() -> None:
     )
 
     # --- 2. 初始化 ---
-    user_prompt = "你好，请帮我查询一下今天北京的天气，然后根据天气推荐一个合适的旅游景点。"
+    user_prompt = "你好，请帮我查询一下今天北京的天气，然后根据天气推荐一个合适的旅游景点。我喜欢去自然生态的景点玩，且免费的最好。"
     project_root = Path(__file__).resolve().parent
     memory_manager = MemoryManager(project_root)
     memory_context = memory_manager.load_relevant_memories(user_prompt)
@@ -134,6 +167,16 @@ def run_agent() -> None:
         observation_str = f"Observation: {observation}"
         print(f"{observation_str}\n" + "=" * 40)
         prompt_history.append(observation_str)
+
+        ticket_recovery_observation = build_ticket_recovery_observation(
+            tool_name,
+            kwargs,
+            observation,
+        )
+        if ticket_recovery_observation:
+            ticket_recovery_observation_str = f"Observation: {ticket_recovery_observation}"
+            print(f"{ticket_recovery_observation_str}\n" + "=" * 40)
+            prompt_history.append(ticket_recovery_observation_str)
 
 
 if __name__ == "__main__":
